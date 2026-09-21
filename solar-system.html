@@ -1,0 +1,679 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Sol, a minimal solar system</title>
+<!--
+  SOL: a minimal solar system template.  One file, zero dependencies, works offline.
+
+  Built to run on anything: Canvas 2D only (no WebGL, no textures, no shaders), a 384px star tile,
+  no blur/shadows, batched orbit strokes, DPR capped at 1.5, frames skipped when nothing moves,
+  and an automatic "lite" mode (1x DPR, 30fps, no glow) if the machine can't hold ~40fps.
+
+  HOW TO EXTEND
+  - Planets:   edit PL (orbit data) and LOOK (how each one is drawn up close).
+  - Timeline:  K maps the slider (0..1) to time in millions of years (Ma) relative to now.
+  - Stories:   ERAS[bodyId] is a list of eras. Each era: E(startMa, kind, "Short - long name", text, items, fact).
+               kind = "fauna" | "myth" | "fiction" | "physics".  Body ids: 0 Sun, 1 Mercury ... 8 Neptune.
+  - Console:   SOL.epoch(-170) jumps to the Jurassic, SOL.open(3) zooms into Earth, SOL.close() zooms out.
+-->
+<style>
+:root{--void:#050813;--star:#dfe4ee;--dust:#8792a8;--line:rgba(223,228,238,.13);--acc:#ffe2a4;
+--serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+--sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:var(--void);color:var(--star);overflow:hidden;font:14px/1.5 var(--sans);-webkit-font-smoothing:antialiased;touch-action:manipulation}
+#c{position:fixed;inset:0;width:100%;height:100%;display:block}
+button{font:inherit;font-size:13px;color:var(--star);background:none;border:0;padding:6px 10px;border-radius:4px;cursor:pointer;opacity:.72}
+button:hover{opacity:1}
+button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+
+#hud{position:fixed;left:24px;top:18px;max-width:min(60vw,440px);pointer-events:none}
+#brand{font:italic 15px var(--serif);color:var(--dust)}
+#big{font:300 clamp(34px,5vw,56px)/1.05 var(--serif);letter-spacing:-.01em;margin-top:8px;font-variant-numeric:lining-nums tabular-nums}
+#sub{color:var(--dust);font-size:13px;min-height:19px}
+#stage{margin-top:12px;font:italic 17px/1.3 var(--serif)}
+#note{color:var(--dust);font-size:12.5px;margin-top:2px}
+#back{display:none;pointer-events:auto;margin:12px 0 0 -10px}
+body.planet #back{display:inline-block}
+#tools{position:fixed;right:14px;top:12px;display:flex;align-items:center;gap:2px;color:var(--dust);font-size:12.5px}
+#fps{margin-right:8px;font-variant-numeric:tabular-nums}
+#body-nav{position:fixed;right:14px;top:48px;display:none;grid-template-columns:repeat(3,auto);gap:2px;padding:5px;border:1px solid var(--line);background:rgba(5,8,19,.94);border-radius:4px;z-index:2}
+body.nav-open #body-nav{display:grid}
+#body-nav button{padding:5px 8px;color:var(--dust);font-size:12px;opacity:1}
+#body-nav button:hover,#body-nav button.on{color:var(--void);background:var(--acc)}
+
+#panel{position:fixed;right:24px;top:76px;bottom:120px;width:min(380px,34vw);overflow:auto;padding:0 0 0 22px;border-left:1px solid var(--line);
+ opacity:0;transform:translateX(14px);pointer-events:none;transition:opacity .4s .35s,transform .4s .35s;scrollbar-width:thin;scrollbar-color:#2a3350 transparent}
+body.planet #panel{opacity:1;transform:none;pointer-events:auto}
+#panel .tag{font-size:12.5px;display:flex;align-items:center;gap:8px}
+#panel .tag i{width:7px;height:7px;border-radius:50%;flex:none}
+#panel h2{font:400 26px/1.15 var(--serif);margin:10px 0 4px}
+#panel .rng{color:var(--dust);font-size:12.5px}
+#panel p{margin:14px 0 6px;color:#c6cddb;font-size:14px;line-height:1.6;max-width:62ch}
+#panel ul{list-style:none;margin-top:8px}
+#panel li{padding:8px 0}
+#panel li b{display:block;font-weight:600;font-size:13.5px}
+#panel li span{color:var(--dust);font-size:13px;line-height:1.5}
+#panel .fact{margin-top:14px;padding-top:12px;border-top:1px solid var(--line);color:var(--dust);font-size:12.5px;line-height:1.55}
+#panel .fact b{color:var(--star);font-weight:600}
+
+#hint{position:fixed;left:24px;bottom:108px;color:var(--dust);font-size:12.5px;transition:opacity .6s}
+#hint.gone{opacity:0}
+#bar{position:fixed;left:0;right:0;bottom:0;padding:8px 18px calc(12px + env(safe-area-inset-bottom));background:linear-gradient(rgba(5,8,19,0),rgba(5,8,19,.92) 45%)}
+#chips{display:none;gap:4px;overflow-x:auto;padding-bottom:6px;scrollbar-width:none}
+#chips::-webkit-scrollbar{display:none}
+body.planet #chips{display:flex}
+#chips button{color:var(--dust);padding:4px 9px;font-size:12.5px;white-space:nowrap;opacity:1}
+#chips button:hover{color:var(--star)}
+#chips button.on{color:var(--void);background:var(--acc)}
+.row{display:flex;align-items:center;gap:6px}
+.rail{position:relative;flex:1;height:40px;margin:0 6px}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:20px;background:transparent;cursor:pointer;display:block}
+input[type=range]::-webkit-slider-runnable-track{height:2px;background:rgba(223,228,238,.2);border-radius:2px}
+input[type=range]::-moz-range-track{height:2px;background:rgba(223,228,238,.2);border-radius:2px}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;border-radius:50%;background:var(--acc);margin-top:-5px;border:0}
+input[type=range]::-moz-range-thumb{width:12px;height:12px;border-radius:50%;background:var(--acc);border:0}
+.ticks{position:absolute;left:6px;right:6px;top:22px;height:14px;pointer-events:none}
+.ticks span{position:absolute;transform:translateX(-50%);white-space:nowrap;font-size:11.5px;color:var(--dust)}
+.ticks span.now{color:var(--acc)}
+#b-spd{min-width:44px;font-variant-numeric:tabular-nums}
+
+@media(max-width:759px){
+ #panel{left:16px;right:16px;top:auto;bottom:118px;width:auto;height:min(42vh,340px);border-left:0;border-top:1px solid var(--line);padding:14px 0 0;transform:translateY(14px)}
+ #panel h2{font-size:22px}
+ #hint{display:none}
+ .ticks span.opt{display:none}
+ #tools #fps{display:none}
+}
+@media(prefers-reduced-motion:reduce){#panel,#hint{transition:none}}
+</style>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<canvas id="c" aria-label="Solar system simulation"></canvas>
+
+<div id="hud">
+  <div id="brand">Sol</div>
+  <div id="big">Now</div>
+  <div id="sub"></div>
+  <div id="stage"></div>
+  <div id="note"></div>
+  <button id="back" type="button">Back to the solar system</button>
+</div>
+
+<div id="tools">
+  <span id="fps"></span>
+  <button id="b-today" type="button" title="Return to the present (Home)">Today</button>
+  <button id="b-bodies" type="button" aria-expanded="false" aria-controls="body-nav">Bodies</button>
+  <button id="b-orbit" type="button" title="Orbit speed (O)">Orbits x1</button>
+  <button id="b-q" type="button" title="Quality (L)">Quality: high</button>
+</div>
+<nav id="body-nav" aria-label="Choose a body"></nav>
+
+<aside id="panel" aria-live="polite"></aside>
+<div id="hint">Click the Sun or a planet to zoom in. Space plays and pauses time.</div>
+
+<div id="bar">
+  <div id="chips"></div>
+  <div class="row">
+    <button id="b-start" type="button" title="Jump to the birth of the Solar System">Start</button>
+    <button id="b-play" type="button">Play</button>
+    <div class="rail"><input id="tl" type="range" min="0" max="10000" value="4999" aria-label="Cosmic time"><div class="ticks" id="ticks"></div></div>
+    <button id="b-spd" type="button" title="Time speed">1x</button>
+  </div>
+</div>
+
+<script src="bodies/sun.js"></script>
+<script src="bodies/mercury.js"></script>
+<script src="bodies/venus.js"></script>
+<script src="bodies/earth.js"></script>
+<script src="bodies/mars.js"></script>
+<script src="bodies/jupiter.js"></script>
+<script src="bodies/saturn.js"></script>
+<script src="bodies/uranus.js"></script>
+<script src="bodies/neptune.js"></script>
+<script>
+(()=>{'use strict';
+/* ================= helpers ================= */
+const TAU=Math.PI*2,PI=Math.PI,D2R=PI/180;
+const $=id=>document.getElementById(id);
+const clamp=(x,a,b)=>x<a?a:x>b?b:x;
+const lerp=(a,b,u)=>a+(b-a)*u;
+const sstep=(a,b,x)=>{const u=clamp((x-a)/(b-a),0,1);return u*u*(3-2*u)};
+const ease=e=>e<.5?4*e*e*e:1-Math.pow(-2*e+2,3)/2;
+const rgb=(r,g,b)=>'rgb('+(r|0)+','+(g|0)+','+(b|0)+')';
+const rgba=(r,g,b,a)=>'rgba('+(r|0)+','+(g|0)+','+(b|0)+','+a.toFixed(3)+')';
+function interp(K,t,log){const n=K.length;if(t<=K[0][0])return K[0][1];if(t>=K[n-1][0])return K[n-1][1];let i=1;while(K[i][0]<t)i++;const a=K[i-1],b=K[i],u=(t-a[0])/(b[0]-a[0]);return log?a[1]*Math.pow(b[1]/a[1],u):a[1]+(b[1]-a[1])*u}
+function row(K,x,out){const n=K.length,m=out.length;if(x<=K[0][0]){for(let j=0;j<m;j++)out[j]=K[0][j+1];return out}
+ if(x>=K[n-1][0]){for(let j=0;j<m;j++)out[j]=K[n-1][j+1];return out}
+ let i=1;while(K[i][0]<x)i++;const a=K[i-1],b=K[i],u=(x-a[0])/(b[0]-a[0]);for(let j=0;j<m;j++)out[j]=a[j+1]+(b[j+1]-a[j+1])*u;return out}
+
+/* ================= master timeline =================
+   [time in Ma relative to now (negative = past), slider position 0..1]
+   Not linear on purpose: the Jurassic gets a slice you can actually hit. The last segment is logarithmic
+   so the slider can cover the Sun's cooling all the way out to a quadrillion years.                */
+const K=[[-4600,0],[-4500,.03],[-4000,.06],[-2500,.10],[-541,.14],[-485,.158],[-419,.176],[-359,.194],[-299,.212],[-252,.23],
+ [-201,.252],[-145,.29],[-66,.33],[-2.6,.39],[-.0117,.445],[0,.5],[250,.57],[1000,.64],[5000,.74],[7590,.82],[7790,.865],[8000,.885],[1e9,1]];
+function pToT(p){p=clamp(p,0,1);let i=1;while(i<K.length-1&&p>K[i][1])i++;const a=K[i-1],b=K[i],u=(p-a[1])/(b[1]-a[1]);
+ return i===K.length-1?a[0]+Math.pow(b[0]-a[0],u)-1:lerp(a[0],b[0],u)}
+function tToP(t){if(t<=K[0][0])return 0;let i=1;while(i<K.length-1&&t>K[i][0])i++;const a=K[i-1],b=K[i];
+ if(i===K.length-1){const u=Math.log(Math.max(1,t-a[0]+1))/Math.log(b[0]-a[0]);return lerp(a[1],b[1],clamp(u,0,1))}
+ return lerp(a[1],b[1],clamp((t-a[0])/(b[0]-a[0]),0,1))}
+function fmtT(t){
+ if(t>-5e-4&&t<5e-4)return['Now',''];
+ if(t<0){const a=-t;
+  if(a>=1000)return[(a/1000).toFixed(2)+' Ga','billion years ago'];
+  if(a>=1)return[(a>=100?Math.round(a):a.toFixed(1))+' Ma','million years ago'];
+  return[Math.max(1,Math.round(a*1000))+' ka','thousand years ago']}
+ if(t<1)return['+'+Math.max(1,Math.round(t*1000))+' ka','thousand years from now'];
+ if(t<1000)return['+'+Math.round(t)+' Ma','million years from now'];
+ if(t<1e6)return['+'+(t/1000).toFixed(2)+' Ga','billion years from now'];
+ if(t<1e9)return['+'+(t/1e6).toFixed(1)+' Tyr','trillion years from now'];
+ return['+'+(t/1e9).toFixed(1)+' Pyr','quadrillion years from now']}
+const pick=(L,t)=>{let r=L[0];for(let i=0;i<L.length;i++){if(t>=L[i][0])r=L[i];else break}return r[1]};
+
+/* what the Sun is doing, and what happened when */
+const ST=[[-4600,'The solar nebula collapses'],[-4570,'A protostar, with planets forming'],[-4500,'A main-sequence Sun'],[5400,'A subgiant Sun'],[6500,'A red giant'],
+ [7590,'Helium flash'],[7700,'An asymptotic giant'],[7785,'A planetary nebula and a new white dwarf'],[8000,'A cooling white dwarf'],[1e5,'A cold white dwarf'],[3e8,'A black dwarf in the long dark']];
+const EV=[[-4600,'The nebula collapses'],[-4540,'Earth accretes'],[-4510,'The Moon-forming impact'],[-3900,'Late heavy bombardment'],[-3500,'Earliest microbial life'],
+ [-2400,'The Great Oxidation'],[-720,'Snowball Earth'],[-541,'The Cambrian explosion'],[-252,'The Great Dying'],[-66,'An asteroid strikes Chicxulub'],[-.3,'Homo sapiens appears'],
+ [-5e-4,'You are here'],[1100,'Earth’s oceans begin to boil away'],[4500,'The Milky Way meets Andromeda'],[5400,'Core hydrogen runs out'],[7370,'Mercury is swallowed'],
+ [7505,'Venus is swallowed'],[7560,'Earth is swallowed'],[7600,'The helium flash'],[7785,'The Sun sheds its shell'],[8000,'A white dwarf begins to cool'],[1e6,'The long dark']];
+
+/* ================= the Sun through time ================= */
+const RK=[[-4600,6],[-4570,2.5],[-4540,1.2],[-4500,.87],[0,1],[5400,1.7],[6500,2.6],[7300,60],[7500,150],[7590,256],[7600,9],[7700,10],[7740,120],[7780,220],[7785,.014],[1e9,.014]]; /* radius, in solar radii */
+const LK=[[5400,1.9],[6500,3],[7300,600],[7500,1500],[7590,2700],[7600,50],[7700,50],[7740,2000],[7780,5000],[7785,100],[7800,.02],[1e9,1e-6]];                       /* luminosity, in solar luminosities */
+const SK=[[-4600,255,140,80],[-4560,255,190,115],[-4500,255,214,150],[0,255,226,165],[5400,255,232,180],[6500,255,195,125],[7300,255,135,85],[7590,255,95,55],[7600,255,190,110],[7700,255,200,125],[7740,255,115,65],[7784,255,95,55]];
+const WK=[[0,190,215,255],[4,232,240,252],[6.5,255,190,130],[8,200,80,50],[9.2,40,20,20]];                                                                              /* white dwarf colour by log10(years since birth) */
+const MM=[[7400,1],[7590,.78],[7785,.54]];                                                                                                                                /* solar mass: orbits widen as it drops */
+const massK=t=>1/interp(MM,t,false);
+const lum=t=>t<-4570?.7:t<=5400?1/(1+.4*(1-(4600+t)/4600)):interp(LK,t,true);
+const sunC=[255,226,165];let sunR=1,sunRel=.5,sunGlowA=1;
+function sunState(t){
+ sunR=interp(RK,t,true);
+ if(t>=7785){const lg=Math.log10(Math.max(1,t-7784));row(WK,lg,sunC);sunGlowA=clamp(1-lg/9.2,0,1)}else{row(SK,t,sunC);sunGlowA=1}
+ sunRel=.1+.9*clamp(Math.log(sunR/.014)/Math.log(256/.014),0,1)}
+
+/* ================= planets ================= */
+const BN=['Sun','Mercury','Venus','Earth','Mars','Jupiter','Saturn','Uranus','Neptune'];
+const BODY_DATA=window.SOL_BODY_DATA||{};
+const PL=[ /* a: AU, e: eccentricity, P: years, w: longitude of perihelion (deg), r: dot size, M0: starting phase, engulf: when the Sun swallows it (Ma) */
+ {n:'Mercury',a:.387,e:.2056,P:.2408,w:77.46,c:'#a9a29a',r:2.4,M0:1.2,engulf:7370},
+ {n:'Venus',a:.723,e:.0068,P:.6152,w:131.5,c:'#e6c48a',r:3.8,M0:3.9,engulf:7505},
+ {n:'Earth',a:1,e:.0167,P:1,w:102.9,c:'#5b9bd5',r:4,M0:.3,engulf:7560},
+ {n:'Mars',a:1.524,e:.0934,P:1.8808,w:336.1,c:'#d4694b',r:3.2,M0:4.6},
+ {n:'Jupiter',a:5.203,e:.0489,P:11.862,w:14.3,c:'#d8b48c',r:7.5,M0:2.1},
+ {n:'Saturn',a:9.537,e:.0565,P:29.457,w:92.4,c:'#e6d5a3',r:6.5,M0:5.5,ring:1},
+ {n:'Uranus',a:19.19,e:.0472,P:84.01,w:170.9,c:'#9bd6dd',r:5,M0:.8},
+ {n:'Neptune',a:30.07,e:.0086,P:164.8,w:45,c:'#5b7ce6',r:5,M0:3.3}
+].map(p=>{p.b=p.a*Math.sqrt(1-p.e*p.e);const w=p.w*D2R;p.ca=Math.cos(w);p.sa=Math.sin(w);if(p.engulf===undefined)p.engulf=Infinity;return p});
+/* distances are square-root compressed so Mercury and Neptune fit on the same screen */
+const N=96;
+const ORB=PL.map(p=>{const o=new Float32Array(N*2);for(let j=0;j<N;j++){const E=j/N*TAU,cE=Math.cos(E),x=p.a*(cE-p.e),y=p.b*Math.sin(E),r=p.a*(1-p.e*cE),f=60/Math.sqrt(r);
+ o[j*2]=(x*p.ca-y*p.sa)*f;o[j*2+1]=-(x*p.sa+y*p.ca)*f}return o});
+const PX=new Float32Array(9),PY=new Float32Array(9);
+function place(yr){for(let i=0;i<8;i++){const p=PL[i];const M=p.M0+TAU*((yr/p.P)%1);let E=M+p.e*Math.sin(M);
+ for(let j=0;j<4;j++)E-=(E-p.e*Math.sin(E)-M)/(1-p.e*Math.cos(E));
+ const cE=Math.cos(E),x=p.a*(cE-p.e),y=p.b*Math.sin(E),r=p.a*(1-p.e*cE),f=60/Math.sqrt(r);
+ PX[i+1]=(x*p.ca-y*p.sa)*f;PY[i+1]=-(x*p.sa+y*p.ca)*f}}
+const born=t=>sstep(-4585,-4525,t);
+
+/* how each planet looks up close */
+const LOOK=[
+ {base:'#8d8780',spots:[[[10,20,.11],[-40,-10,.08],[60,35,.06],[-15,-45,.09],[35,-22,.07],[-70,25,.07]],'rgba(20,18,16,.24)']},
+ {bands:['#e8cf9b','#dcb97b','#ecd6a4','#d9b477','#e6c88f','#dcbb80','#e9d29e'],atm:'255,224,160'},
+ {atm:'150,200,255'},
+ {base:'#c9633f',spots:[[[-20,-12,.16],[40,14,.12],[10,-32,.1],[-60,20,.08]],'rgba(80,30,18,.4)'],cap:.14,atm:'240,150,110'},
+ {bands:['#d9b48b','#b98a63','#e8d3b0','#a8734f','#e2c9a3','#b48560','#dcbb92','#a9764f','#d9b48b'],spots:[[[35,-24,.13]],'rgba(196,84,52,.85)'],atm:'240,210,170'},
+ {bands:['#e6d5a3','#d6c08a','#eadcae','#cdb37c','#e2cf9a','#d3ba85','#e6d5a3'],ring:1,atm:'240,225,180'},
+ {base:'#9fd8df',bands:['#a8dde3','#9bd3da','#a4dbe1'],atm:'170,235,240'},
+ {bands:['#4a6fdc','#3f62cf','#5479e0','#3c5bc4','#4a6fdc'],spots:[[[30,-16,.11]],'rgba(20,30,100,.55)'],atm:'110,150,255'}
+];
+/* Earth's look over time: [Ma, ocean rgb, land rgb, ice, cloud] */
+const EK=[[-4600,90,25,8,255,120,30,0,0],[-4300,80,28,10,235,95,25,0,0],[-4000,40,70,85,75,60,50,0,.1],[-2500,40,92,115,100,85,70,0,.05],[-780,36,88,140,104,90,72,.1,.05],
+ [-700,90,140,180,150,150,150,.95,.05],[-635,90,140,180,150,150,150,.95,.05],[-600,36,90,145,108,92,72,.1,.05],[-541,35,95,150,112,96,74,.08,0],[-419,30,100,160,98,112,72,.08,0],
+ [-359,30,102,165,58,122,72,.08,0],[-299,30,104,168,40,112,66,.05,0],[-252,30,100,160,156,128,82,.02,0],[-201,30,100,160,140,128,82,0,0],[-145,32,105,170,72,128,76,0,0],
+ [-66,34,110,178,64,126,78,0,0],[-2.6,36,112,182,72,126,82,.3,0],[-.0117,36,112,182,72,126,82,.22,0],[0,38,118,190,78,132,86,.12,0],[250,38,118,190,118,124,84,.12,0],
+ [1000,118,150,172,138,112,84,0,.35],[1600,150,140,120,150,108,80,0,.2],[5000,132,100,80,142,102,72,0,.1],[7000,150,80,50,150,70,38,0,.1],[7560,210,70,25,210,70,25,0,0]];
+const ek=new Array(8).fill(0);
+/* continents as blobs [lon, lat, size]: Pangaea, today, Pangaea Proxima */
+const PANG=[[-8,22,.32],[18,-8,.3],[34,32,.24],[-36,0,.24],[6,-38,.2],[26,-28,.16],[50,-6,.15],[-24,38,.16],[10,-60,.2]];
+const PRES=[[20,50,.22],[90,42,.24],[20,4,.24],[-100,45,.22],[-60,-15,.2],[135,-25,.12],[0,-84,.24],[-40,72,.1],[78,18,.12]];
+const PROX=[[70,20,.3],[100,0,.28],[52,34,.26],[112,28,.24],[80,-36,.2],[132,-10,.18],[60,-8,.16],[100,46,.16],[0,-84,.2]];
+const CLOUDS=[[0,35,.28],[70,-20,.3],[150,10,.26],[-100,-40,.24],[-170,30,.22]];
+const EL=PANG.map(a=>[a[0],a[1],a[2]]);
+function earthLobes(t){let A,B,u=0;if(t<=-250){A=B=PANG}else if(t<0){A=PANG;B=PRES;u=(t+250)/250}else if(t<250){A=PRES;B=PROX;u=t/250}else{A=B=PROX}
+ for(let i=0;i<A.length;i++){const a=A[i],b=B[i],o=EL[i];o[0]=lerp(a[0],b[0],u);o[1]=lerp(a[1],b[1],u);o[2]=lerp(a[2],b[2],u)}return EL}
+
+/* ================= stories ================= */
+const KIND={fauna:['Animals of this era','#86d9a0','Fact'],myth:['Stories and myths','#f0b56a','Note'],fiction:['Invented myths, from a future that hasn’t happened','#b7a2ff','Real science'],physics:['What happens','#8fb6e6','Fact']};
+const E=(t0,k,n,x,i,f,g)=>({t0,k,n,x,i,f,g});
+const ERAS={};
+ERAS[0]=[
+E(-4600,'physics','Birth - a cloud becomes a star','A slowly spinning cloud of gas and dust collapsed under its own gravity. Its heart ignited as a star, and the leftover disk clumped into planets.',
+ [['Solar nebula','A rotating cloud of hydrogen and helium, seeded with dust from older stars.'],['Protoplanetary disk','Dust stuck into pebbles, then planetesimals, then worlds.'],['First fusion','Hydrogen fusion switches on. The young Sun is only about 70% as bright as today.']],
+ 'Meteorites date the Solar System to about 4.57 billion years.'),
+E(-4500,'physics','Main sequence - the long steady burn','For about ten billion years the Sun fuses hydrogen into helium, brightening very slowly as helium builds up in its core.',
+ [['Slow brightening','Roughly 1% brighter every 100 million years.'],['The 11-year cycle','Sunspots and flares rise and fall on a magnetic cycle.'],['Solar wind','A constant stream of charged particles that shapes every planet’s sky.']],
+ 'The Sun is about 4.6 billion years old today, roughly halfway through this stage.'),
+E(-.0117,'myth','Myths - the Sun as a god','Nearly every culture gave the Sun a name, a face and a story.',
+ [['Ra (Egypt)','Crosses the sky in a solar barque by day and fights the serpent Apep through the night.'],['Helios (Greece)','Drives a blazing chariot from east to west.'],['Amaterasu (Japan)','The sun goddess who hid in a cave and darkened the world until she was lured out.'],['Surya (India)','Rides a chariot pulled by seven horses.'],['Inti (Inca)','Golden father of the Inca emperors.']],
+ 'These are stories, not science. They are how people made sense of a daily miracle.'),
+E(0,'fiction','Tomorrow - the patient furnace','Nobody knows what anyone will believe millions of years from now, so these stories come from a future that doesn’t exist. All invented.',
+ [['The Warm Grandmother','A Sun who turns her lamp up a little each age, so no child ever notices the light growing.'],['The Debt of Light','Every photon borrowed from the Sun must someday be repaid as a story.'],['Lantern of the Choir','The last minds of Earth swear the star keeps count of every song sung beneath it.']],
+ 'The Sun brightens about 10% over the next billion years, which will eventually end Earth’s oceans.'),
+E(5400,'physics','Red giant - the swelling','Core hydrogen runs out. The core shrinks and heats while the outer layers puff up and cool. The Sun swells past Mercury, Venus and Earth, then sheds about half its mass.',
+ [['Subgiant','Hydrogen burns in a shell around the dead core, and the Sun grows and brightens.'],['Red-giant tip','About 250 times today’s radius and 2,700 times today’s brightness.'],['Helium flash','Helium ignites in the core, then burns quietly for around 100 million years.'],['Asymptotic giant','A second, pulsing swelling that blows off the outer layers.']],
+ 'Mass loss makes the surviving planets’ orbits spiral outward.'),
+E(7785,'physics','White dwarf - the long dark','The bare core is left: a white dwarf as small as Earth with about half the Sun’s mass. It only cools, for longer than the universe has existed.',
+ [['Planetary nebula','The shed shell glows for 10 to 20 thousand years, then fades into space.'],['White dwarf','Earth-sized, absurdly dense, slowly radiating away its stored heat.'],['Black dwarf (theory)','After about 10¹⁵ years, a cold dark cinder. The universe isn’t old enough for one to exist yet.'],['The stragglers','Mars and the giants keep circling in the dark, on wider orbits than before.']],
+ 'Over about 10¹⁵ years, close passes by other stars may strip the last planets away.')
+];
+ERAS[1]=[
+E(-4600,'physics','Ages - iron heart, cratered skin','Mercury is mostly a huge iron core under a thin rocky shell. Early bombardment carved giant basins, volcanoes died out about 3.5 billion years ago, and the whole planet has been slowly shrinking as it cools.',
+ [['Caloris Basin','A 1,550 km impact scar from around 3.9 billion years ago.'],['A shrinking planet','Cooling has contracted Mercury by kilometers, wrinkling it with cliffs.'],['Ice at the poles','Water ice hides in permanently shadowed craters, though noon reaches about 430 °C.']],
+ 'Mercury spins three times for every two orbits, so one solar day lasts two Mercury years.'),
+E(-.0117,'myth','Myths - the messenger','The fastest planet wore the names of the fastest gods.',
+ [['Hermes and Mercury','The winged-sandal messenger of the gods.'],['Nabu (Babylon)','Scribe god of writing and wisdom, linked with the planet.'],['Apollo and Hermes','Early Greeks took its morning and evening appearances for two different worlds.'],['Budha (India)','Gives his name to Wednesday.']],
+ 'These are cultural stories, not science.'),
+E(0,'fiction','Tomorrow - the Runner','A small world with a long memory, according to nobody who exists yet.',
+ [['The Runner and the Slow Fire','A small world outran the Sun for ages, until the Sun learned to walk.'],['The Iron Bell','They say the core still rings when the Sun flares, one stroke per storm.']],
+ 'Mercury’s orbit is chaotic over billions of years, with a small chance it is flung out or hits Venus.'),
+E(7370,'physics','Fate - swallowed first','The swelling Sun’s outer layers reach Mercury first. It spirals in and evaporates.',
+ [['Vaporized','Its iron core dissolves into the Sun’s envelope.'],['First to go','Venus and Earth follow within about 200 million years.']],
+ 'Nothing on Mercury survives the red giant.')
+];
+ERAS[2]=[
+E(-4600,'physics','Ages - the sister gone hot','Venus is almost Earth’s twin in size, but a runaway greenhouse left it with a crushing CO₂ atmosphere and a surface near 465 °C.',
+ [['Possible early oceans','Some models say Venus held liquid water for a long time. It is still debated.'],['Runaway greenhouse','Water vapor trapped heat, the oceans boiled away, and sunlight split the vapor apart.'],['Backwards spin','Venus rotates the wrong way, and its day is longer than its year.']],
+ 'The air at Venus’s surface is about 90 times denser than Earth’s.'),
+E(-.0117,'myth','Myths - the morning and evening star','The brightest planet in the sky was, almost everywhere, a goddess.',
+ [['Inanna and Ishtar','Mesopotamian Queen of Heaven. Her descent into the underworld may echo Venus vanishing from the sky.'],['Aphrodite and Venus','Greek and Roman goddess of love and beauty.'],['Quetzalcoatl','In Aztec tradition the Morning Star is tied to the feathered serpent.'],['Taibai (China)','The “Great White”, the metal planet.']],
+ 'These are cultural stories, not science.'),
+E(0,'fiction','Tomorrow - the veiled sister','Wrapped in cloud, she never answered anyone, so people invented her answers.',
+ [['The Veiled Sister','She hides her face in fog, and the Ember Choir keeps sending songs into it.'],['The Sulphur Cathedral','Floating cities in the temperate cloud layer, whose priests insist the sky is a sea.']],
+ 'About 50 km up, Venus’s clouds have Earth-like pressure and temperature, a proposed home for floating habitats.'),
+E(7505,'physics','Fate - swallowed','Venus is engulfed shortly before Earth.',
+ [['Vaporized','The swelling Sun’s outer layers drag it in.'],['A nudge for Earth','The Sun’s expanding envelope is now Earth’s next neighbor.']],
+ 'Venus and Mercury are the first two worlds lost.')
+];
+ERAS[3]=[
+E(-4600,'physics','Hadean - a molten world','A ball of magma still raining rock. About 4.5 billion years ago a Mars-sized body slammed into the young Earth, and the debris became the Moon. No life, no continents, nothing you could breathe.',
+ [['Magma ocean','The whole surface was molten for millions of years.'],['The Moon-forming impact','Debris from the collision coalesced into the Moon.'],['First crust and oceans','As it cooled, steam condensed into the first oceans.']],
+ 'Tiny zircon crystals from Western Australia, 4.4 billion years old, hint at liquid water very early.'),
+E(-4000,'fauna','Archean - microbial mats','There are no animals yet. Life is single-celled, living in the oceans and around hot vents.',
+ [['Stromatolites','Layered mounds built by microbial mats, with fossils about 3.5 billion years old.'],['Cyanobacteria','Began making oxygen from sunlight, slowly changing the planet.'],['Vent microbes','Heat-loving archaea that thrive without sunlight.']],
+ 'Oxygen only became abundant after about 2.4 billion years ago.','First life, no animals yet'),
+E(-2500,'fauna','Proterozoic - oxygen and the first animals','Oxygen built up, ice buried the planet at least twice, and near the end the first soft-bodied animals appeared.',
+ [['Eukaryotes','Cells with nuclei: the ancestors of every plant, fungus and animal.'],['Snowball Earth','Ice may have reached the equator about 720 to 635 million years ago.'],['Ediacaran biota','Dickinsonia and Charnia: quilt- and frond-like organisms, some perhaps early animals.']],
+ 'The Ediacaran fossils are around 575 million years old.','Life of the era, and the first animals'),
+E(-541,'fauna','Cambrian - the explosion','In roughly 20 million years most major animal groups show up in the fossil record. Everything still lives in the sea.',
+ [['Trilobites','Hard-shelled arthropods that would last about 270 million years.'],['Anomalocaris','A meter-long predator with grasping appendages.'],['Hallucigenia','A spiny worm-like animal once reconstructed upside down.'],['Pikaia','An early chordate, distant cousin of every vertebrate.']],
+ 'The Burgess Shale in Canada preserved soft bodies from about 508 million years ago.'),
+E(-485,'fauna','Ordovician-Silurian - seas of shells','Warm seas fill with shelled and armored animals. Plants creep onto land and the first jawed fish appear.',
+ [['Orthocone nautiloids','Straight-shelled cephalopods, some several meters long.'],['Eurypterids','“Sea scorpions” up to about two meters long.'],['Graptolites','Drifting colonial animals, now used to date rocks.'],['First jawed fish','Jaws evolve, and the sea gets a new kind of predator.']],
+ 'The end-Ordovician extinction, about 445 million years ago, wiped out roughly 85% of species.'),
+E(-419,'fauna','Devonian - age of fishes','Fish dominate every water body, forests appear, and some fish start crawling ashore.',
+ [['Dunkleosteus','An armored predator with self-sharpening bone plates instead of teeth.'],['Tiktaalik','A fish with a neck and wrist-like fins, a step toward land.'],['Ichthyostega','An early tetrapod with limbs and digits.'],['First forests','Archaeopteris trees and the first insects.']],
+ 'Two extinction pulses near 372 and 359 million years ago hit reef and shallow-sea life hard.'),
+E(-359,'fauna','Carboniferous - coal forests, giant bugs','Vast swamp forests cover the land, the air is rich in oxygen, and insects grow enormous.',
+ [['Meganeura','A dragonfly-like insect with a wingspan around 70 cm.'],['Arthropleura','A millipede relative up to about two meters long.'],['Hylonomus','One of the first reptiles, lizard-sized.'],['Swamp amphibians','Large amphibians rule the shores.']],
+ 'Those buried forests became much of the coal burned today.'),
+E(-299,'fauna','Permian - before the Great Dying','Pangaea is dry and hot inland. Mammal-like synapsids rule, until the worst extinction in Earth’s history.',
+ [['Dimetrodon','A sail-backed synapsid, closer to mammals than to dinosaurs.'],['Gorgonopsians','Saber-toothed synapsid predators.'],['Helicoprion','A shark relative with a spiral “buzzsaw” of teeth.'],['The Great Dying','About 252 million years ago roughly 90% of marine species vanished.']],
+ 'Massive volcanism in Siberia is the leading suspect.'),
+E(-252,'fauna','Triassic - dinosaurs arrive','Life rebuilds slowly. The first dinosaurs, pterosaurs and mammals all appear.',
+ [['Coelophysis','A small, lightly built early dinosaur.'],['Ichthyosaurs','Dolphin-shaped marine reptiles.'],['Early pterosaurs','Eudimorphodon and kin, the first flying reptiles.'],['First mammals','Tiny shrew-like night dwellers such as Morganucodon.']],
+ 'The single supercontinent Pangaea dominated the map.'),
+E(-201,'fauna','Jurassic - age of giants','Pangaea splits, warm seas flood the continents, and ferns and conifers cover the land. Dinosaurs grow to enormous sizes.',
+ [['Brachiosaurus','A towering sauropod, up to about 22 m long, browsing tall conifers.'],['Stegosaurus','Plates along its back and four spikes on its tail.'],['Allosaurus','Top predator of its time, 8 to 9 m long.'],['Diplodocus','A whip-tailed sauropod around 25 m long.'],['Archaeopteryx','A feathered, bird-like dinosaur from about 150 million years ago.'],['Liopleurodon','A fast marine reptile, really about 6 to 7 m long, not the giant of TV.'],['Pterodactylus','A small pterosaur skimming the lagoons.']],
+ 'Archaeopteryx fossils come from the Solnhofen limestone in Germany.'),
+E(-145,'fauna','Cretaceous - the last dinosaurs','Flowers spread, seas are high, and dinosaurs reach their most varied. It ends in a single day.',
+ [['Tyrannosaurus rex','About 12 m long, with one of the strongest bites of any land animal.'],['Triceratops','A three-horned herbivore with a bony frill.'],['Velociraptor','Turkey-sized and feathered, smaller than the movies show.'],['Spinosaurus','A sail-backed fish-eater from North Africa, around 15 m long.'],['Mosasaurus','A giant marine lizard, 12 m or more.'],['Quetzalcoatlus','A giraffe-tall pterosaur with a wingspan near 10 m.'],['Flowers and bees','Flowering plants appear and spread, and bees follow.']],
+ 'A roughly 10 km asteroid hit Chicxulub, Mexico, 66 million years ago, ending the non-avian dinosaurs.'),
+E(-66,'fauna','Cenozoic - age of mammals','With the dinosaurs gone, mammals and birds take over. The world cools, and grasslands spread.',
+ [['Titanoboa','A snake around 13 m long in the hot Paleocene swamps of Colombia.'],['Gastornis','A flightless bird about two meters tall.'],['Basilosaurus','An early whale, 15 m or more, with a long snake-like body.'],['Paraceratherium','The largest land mammal ever, a hornless rhino relative.'],['Megalodon','A giant shark, possibly 15 m or more, gone by about 3.6 million years ago.'],['Apes and early humans','Apes diversify, and by about 4 million years ago our ancestors walk upright.']],
+ 'Antarctica glaciated around 34 million years ago and the whole world cooled.'),
+E(-2.6,'fauna','Ice Age - megafauna','Ice sheets advance and retreat. Giants roam the cold plains, and our species appears.',
+ [['Woolly mammoth','A shaggy Arctic elephant. The last island herd survived until about 4,000 years ago.'],['Smilodon','A saber-toothed cat with powerful forelimbs.'],['Megatherium','A giant ground sloth about 4 m tall, weighing several tonnes.'],['Glyptodon','A car-sized armored relative of armadillos.'],['Homo sapiens','Our species appears in Africa about 300,000 years ago.']],
+ 'Many megafauna vanished between about 50,000 and 10,000 years ago as humans spread and the climate shifted.'),
+E(-.0117,'myth','Now - the stories we tell about Earth','Every culture had to explain where the ground came from. A few of the ways people have told it.',
+ [['Gaia (Greece)','The primordial Earth, mother of sky, sea and mountains.'],['Nut and Geb (Egypt)','The sky goddess arches over Geb, the earth, and the air god Shu holds them apart.'],['Ymir’s body (Norse)','Odin and his brothers built the world from the giant Ymir: flesh became earth, blood the seas, skull the sky.'],['Pangu (China)','A giant who split heaven from earth, and whose body became the mountains and rivers.'],['Turtle Island (many Indigenous nations)','Land grew on a turtle’s back from mud brought up by a diver, often a muskrat.'],['The Dreaming (Aboriginal Australia)','Ancestral beings shaped the land as they traveled, so hills and rivers are their journeys.'],['Prithvi (India)','Earth as a goddess, “the broad one”, mother of all who live on her.']],
+ 'None of these are science. The real Earth is 4.54 billion years old, far older than any story.'),
+E(0,'fiction','Future I - the long tomorrow','These are made up, told by people who don’t exist yet, about a Earth they only half remember.',
+ [['The Wandering Mother','When the continents were islands, they say, the Earth grew lonely and pulled them close, one slow embrace.'],['The Salt Choir','The last shallow-sea cities sang tide-songs to keep the water from leaving.'],['The Lantern-Keepers','Those who stayed lit a lamp on every peak so the ones who left would remember the way home.']],
+ 'The continents are likely to drift together into a new supercontinent, “Pangaea Proxima”, in about 250 million years.'),
+E(250,'fiction','Future II - the bright age','More invented stories, from a warmer, thinner-aired world.',
+ [['The Sun-Tithe','Each year the Sun asked for a little more of the sea. The old ones paid in silence and in rain.'],['Songs of the Thin Air','Forests grew sparse, and the wind learned to carry stories instead of seeds.'],['The Cool Cellar Kings','Rulers of the deep caves that still held frost.']],
+ 'As the Sun brightens, CO₂-hungry plants start to struggle within a few hundred million years.'),
+E(1000,'fiction','Future III - the ember choir','Invented, and a little sad: myths of a planet that lost its sea.',
+ [['The Ember Choir','What is left of Earth-born minds sing in drifting habitats, humming the sound of rain they never saw.'],['The Ferry of Ash','A boatman crosses dry sea-floors, ferrying memories for one coin: a name.'],['The Second Dawn','They say the Sun will one day swallow the sky, and the choir will be there to sing it off.']],
+ 'Within roughly one to one and a half billion years the oceans evaporate and Earth ends up Venus-like.'),
+E(5000,'fiction','Future IV - the swelling sun','The last stories, told while the sky turns red and grows.',
+ [['The Golden Gate','The Sun opens like a door, and the whole system walks through.'],['Dust Prayers','Every grain of Earth’s dust prays to be starlight.'],['The Pilot of the Red Hour','A last pilot flies sunward to say goodbye, and never sends back a word.']],
+ 'In about 5 billion years the Sun leaves the main sequence and swells to roughly 250 times its size.'),
+E(7560,'physics','Gone - starstuff','Earth is inside the Sun’s outer layers, spiraling in. Some of its atoms may be blown out into space and become part of the next generation of stars and planets.',
+ [['Engulfed','Drag from the Sun’s thin outer envelope pulls Earth inward until it evaporates.'],['Planetary nebula','The Sun’s shed layers glow for tens of thousands of years, seeding the galaxy.'],['Starstuff','Carbon, oxygen and iron, recycled into whatever comes next.']],
+ 'Several studies find Earth is most likely engulfed at the red-giant tip.')
+];
+ERAS[4]=[
+E(-4600,'physics','Ages - rusty desert, wet past','Early Mars had rivers, lakes and maybe seas about 3.8 billion years ago. It lost its magnetic field and most of its air, and dried into a cold desert.',
+ [['Valles Marineris','A canyon system about 4,000 km long.'],['Olympus Mons','The tallest known volcano in the Solar System, roughly 22 km high.'],['Lost water','Deltas and clay minerals show long-standing water.']],
+ 'Mars has two small moons, and Phobos is slowly spiraling inward.'),
+E(-.0117,'myth','Myths - the red war star','Its color made it a planet of blood, fire and war.',
+ [['Ares and Mars','The god of war.'],['Her Desher (Egypt)','“The Red One.”'],['Mangala (India)','A war deity, and the origin of Tuesday’s name.'],['Huoxing (China)','The “fire star”.']],
+ 'These are cultural stories, not science.'),
+E(0,'fiction','Tomorrow - the green return','Invented tales of a Mars that woke up for a while.',
+ [['The Green Return','Mars grew warm for an age, and some say lichen sang under the thawing ice.'],['The Cartographers of Dust','A people who mapped the great storms as living beasts.']],
+ 'As the Sun brightens, Mars’s climate could warm, and nobody knows how habitable it would get.'),
+E(5400,'physics','Fate - scorched survivor','Mars sits just outside the Sun’s maximum size, so it probably survives the red giant, baked and slowly drifting outward.',
+ [['Just out of reach','The Sun’s largest radius is around 1.2 AU. Mars orbits at about 1.5.'],['Orbit widens','As the Sun loses mass, the orbit stretches outward.']],
+ 'It is one of the few inner worlds likely to remain.')
+];
+ERAS[5]=[
+E(-4600,'physics','Ages - the giant that arrived first','Jupiter formed within a few million years and holds more than twice the mass of all the other planets combined. Some models say it wandered inward and back out, reshaping the inner system.',
+ [['Great Red Spot','A storm observed for well over a century, now shrinking.'],['Galilean moons','Io, Europa, Ganymede and Callisto. Europa hides a salty ocean.'],['The shield','Its gravity flung comets and asteroids around the whole system.']],
+ 'Jupiter’s magnetic field is the strongest of any planet.'),
+E(-.0117,'myth','Myths - king of the gods','The biggest planet got the biggest gods.',
+ [['Zeus and Jupiter','King of the gods and thrower of thunder.'],['Marduk (Babylon)','Champion god whose star is Jupiter.'],['Brihaspati (India)','Teacher of the gods, and the origin of Thursday’s name.'],['Muxing (China)','The “wood star”. Its 12-year orbit shaped the zodiac cycle.']],
+ 'These are cultural stories, not science.'),
+E(0,'fiction','Tomorrow - the storm court','Invented politics in the clouds of the great planet.',
+ [['The Storm Court','Cloud cities kept a parliament of winds that argued for a thousand years.'],['Song of Io','Volcano-priests offered sulfur to the moon-fires.']],
+ 'When the Sun swells, the giants’ icy moons may briefly warm.'),
+E(7500,'physics','Fate - survivor of the red giant','Jupiter is too far to be swallowed. It gets scorched, drifts outward as the Sun sheds mass, and ends up orbiting a dim white dwarf.',
+ [['Orbit stretches','As the Sun loses about half its mass, orbits widen by nearly a factor of two.'],['Moons roasted','Ice moons thaw briefly, then refreeze.'],['A quiet ending','It keeps circling a cooling star in the dark.']],
+ 'Jupiter is likely to outlast every other world in the system.')
+];
+ERAS[6]=[
+E(-4600,'physics','Ages - lord of the rings','Saturn is a gas giant with a sprawling ring system of mostly water ice. The rings may be far younger than the planet, though estimates vary from tens of millions of years to billions.',
+ [['The rings','Tens of thousands of km wide but only meters thick in places.'],['Titan','The only moon with a thick atmosphere, and lakes of liquid methane.'],['Enceladus','Geysers vent water from a hidden ocean.']],
+ 'Saturn is less dense than water.'),
+E(-.0117,'myth','Myths - the harvest lord','The slowest of the naked-eye planets became a god of time and harvest.',
+ [['Cronus and Saturn','Titan-king of the Golden Age and the harvest.'],['Saturnalia','A Roman midwinter festival of gifts and role reversals.'],['Shani (India)','A slow-moving judge, and the origin of Saturday’s name.'],['Tuxing (China)','The “earth star”.']],
+ 'These are cultural stories, not science.'),
+E(0,'fiction','Tomorrow - the ring-weavers','Invented craft-myths about the ice loom.',
+ [['The Ring-Weavers','They spun the ice loom for a thousand years until one strand caught the Sun’s light.'],['Titan Tide','Methane fishermen sang the lake-songs, promising the rain would return.']],
+ 'Saturn’s rings are slowly raining onto the planet and could vanish in some hundreds of millions of years.'),
+E(7500,'physics','Fate - still standing','Saturn survives too. The red giant’s heat may boil away the ring ice if it still exists.',
+ [['Rings versus the red giant','Heat could sublimate the ice.'],['A warm Titan','Titan might briefly get warm enough for liquid water at the surface.']],
+ 'Like Jupiter, Saturn ends up circling a white dwarf on a wider orbit.')
+];
+ERAS[7]=[
+E(-4600,'physics','Ages - the sideways planet','Uranus is tilted about 98 degrees, probably knocked over by an ancient giant impact, so it rolls around the Sun on its side.',
+ [['Extreme seasons','Each pole gets about 42 years of sunlight, then 42 of darkness.'],['Voyager 2, 1986','The only spacecraft to visit, revealing faint rings and small moons.'],['Ice giant','Water, ammonia and methane ices under a hydrogen and helium atmosphere. Methane gives the cyan color.']],
+ 'Uranus was the first planet found with a telescope, in 1781.'),
+E(-.0117,'myth','Myths - the sky father','The youngest name in the sky comes from the oldest god.',
+ [['Ouranos (Greece)','The primordial sky god and father of the Titans.'],['Named in 1781','William Herschel wanted to call it Georgium Sidus, after King George III.'],['Sky and Earth','Many traditions pair a sky father with an earth mother.']],
+ 'These are cultural stories, not science.'),
+E(0,'fiction','Tomorrow - the tilted court','Invented customs of an age-slowed world.',
+ [['The Tilted Court','A society that measured all time in 84-year sleeps.'],['The Diamond Rain','Merchants of frost sold storms of falling diamonds.']],
+ 'Some physicists think the pressures inside ice giants could squeeze carbon into diamond rain.'),
+E(7500,'physics','Fate - a cold witness','Uranus is too remote to be scorched much. It drifts outward as the Sun sheds mass and keeps circling the white dwarf.',
+ [['Orbit widens','From about 19 AU to roughly 35.'],['Long night','It stays cold for as long as anything does.']],
+ 'Its tilt and rings persist.')
+];
+ERAS[8]=[
+E(-4600,'physics','Ages - found by math','Neptune was predicted from wobbles in Uranus’s orbit and found in 1846. It has the fastest winds in the Solar System, and its moon Triton orbits backwards, probably a captured Kuiper Belt object.',
+ [['Predicted by math','Le Verrier and Adams worked out where to look, and Galle found it.'],['Supersonic winds','Up to about 2,000 km/h.'],['Triton','Retrograde orbit and nitrogen geysers, slowly spiraling in.']],
+ 'In about 3.6 billion years Triton may be torn apart into a ring.'),
+E(-.0117,'myth','Myths - god of the deep','Named for the sea god because of its deep blue.',
+ [['Poseidon and Neptune','God of the sea, storms and earthquakes.'],['The trident','The planet’s symbol is his trident.'],['A modern name','Unlike the others, Neptune got its name only after its discovery.']],
+ 'These are cultural stories, not science.'),
+E(0,'fiction','Tomorrow - the long blue winter','An invented age of very slow seasons.',
+ [['The Long Blue Winter','A year lasted 165 Earth years, and every generation prayed for one thaw.'],['Triton’s Ring','After Triton broke, they said the moon became a necklace for the sea god.']],
+ 'Neptune takes about 165 years to circle the Sun.'),
+E(7500,'physics','Fate - the edge of the family','The outermost planet is barely touched by the red giant. Its orbit widens as the Sun loses mass, and it ends up circling a faint white dwarf.',
+ [['Orbit stretches','From about 30 AU to roughly 55.'],['The far dark','A fading star and few passers-by: quiet for trillions of years.']],
+ 'Neptune outlasts almost everything.')
+];
+const eraAt=(b,t)=>{const L=ERAS[b];let r=L[0];for(let i=0;i<L.length;i++){if(t>=L[i].t0)r=L[i];else break}return r};
+const shortName=e=>e.n.split(' - ')[0];
+const longName=e=>{const s=e.n.split(' - ');return s.length>1?s[1]:s[0]};
+
+/* ================= state ================= */
+const cv=$('c'),ctx=cv.getContext('2d',{alpha:false});
+const bigEl=$('big'),subEl=$('sub'),stageEl=$('stage'),noteEl=$('note'),panel=$('panel'),chips=$('chips'),tl=$('tl'),fpsEl=$('fps'),hint=$('hint');
+const btnPlay=$('b-play'),btnSpd=$('b-spd'),btnOrb=$('b-orbit'),btnQ=$('b-q'),btnToday=$('b-today'),btnBodies=$('b-bodies'),bodyNav=$('body-nav');
+const reduced=window.matchMedia&&matchMedia('(prefers-reduced-motion:reduce)').matches;
+const TT=reduced?.01:.9,ZMAX=24,ORB_RATE=.12;
+const SPEEDS=[.25,.5,1,2,4],OSP=[1,4,16,0];
+let W=1,H=1,dpr=1,F=1,SC=1,ps=1,cx0=0,cy0=0,vcx=0,vcy=0,Rview=100,narrow=false;
+let p=.4999,playing=false,si=2,oi=0,yr=0,clock=0,T=0;
+let view='system',sel=0,tz=0,hov=-1,lite=false,dirty=true,sunPx=5;
+const cam={ax:0,ay:0,ox:0,oy:0,s:1};
+
+/* stars: one small tiled texture (about 0.6 MB of video memory) instead of drawing points every frame */
+const tile=document.createElement('canvas');tile.width=tile.height=384;
+{const g=tile.getContext('2d');g.fillStyle='#050813';g.fillRect(0,0,384,384);let s=7;const rnd=()=>(s=(s*16807)%2147483647)/2147483647;
+ for(let i=0;i<64;i++){const sz=rnd()<.15?1.8:1;g.fillStyle='rgba(223,228,238,'+(.25+rnd()*.6).toFixed(2)+')';g.fillRect(rnd()*384,rnd()*384,sz,sz)}}
+let starPat=ctx.createPattern(tile,'repeat');
+
+function resize(){
+ W=innerWidth;H=innerHeight;dpr=Math.min(window.devicePixelRatio||1,lite?1:1.5);
+ cv.width=Math.round(W*dpr);cv.height=Math.round(H*dpr);
+ narrow=W<760;const half=Math.min(W/2,(H-110)/2)*.96;F=narrow?Math.min(half/260,.82):half/386;ps=clamp(half/300,.8,1.5);
+ cx0=W/2;cy0=(H-86)/2+8;
+ if(narrow){vcx=W/2;vcy=(H-96)*.27+30;Rview=Math.max(50,Math.min(W*.3,H*.17))}
+ else{const pw=Math.min(400,W*.36)+40;vcx=(W-pw)/2;vcy=(H-96)/2+12;Rview=Math.max(60,Math.min((W-pw)*.27,(H-130)*.3))}
+ dirty=true}
+function setLite(v,auto){lite=v;btnQ.textContent=v?'Quality: lite'+(auto?' (auto)':''):'Quality: high';resize()}
+
+/* ================= drawing: system view ================= */
+function setCam(){
+ if(view==='system'){cam.ax=cx0;cam.ay=cy0;cam.ox=0;cam.oy=0;cam.s=SC;return}
+ const e=ease(tz),x=PX[sel],y=PY[sel],ax0=cx0+x*SC,ay0=cy0+y*SC;
+ cam.ax=lerp(ax0,vcx,e);cam.ay=lerp(ay0,vcy,e);cam.ox=x;cam.oy=y;cam.s=SC*Math.exp(Math.log(ZMAX)*e)}
+
+function drawMoons(body,cx,cy,planetRadius,alpha,detail){
+ const moons=BODY_DATA[body]&&BODY_DATA[body].moons;if(!moons||!moons.length)return;
+ for(const moon of moons){
+  const orbit=planetRadius+moon.a*(detail?planetRadius*.055:ps*1.45);
+  const angle=moon.phase+clock*TAU/(moon.period*.7);
+  ctx.globalAlpha=alpha*.35;ctx.strokeStyle='rgba(223,228,238,.42)';ctx.lineWidth=detail?1:.7;
+  ctx.beginPath();ctx.ellipse(cx,cy,orbit,orbit*.42,-.22,0,TAU);ctx.stroke();
+  const mx=cx+Math.cos(angle)*orbit,my=cy+Math.sin(angle)*orbit*.42;
+  ctx.globalAlpha=alpha;ctx.fillStyle=moon.color;ctx.beginPath();ctx.arc(mx,my,Math.max(.85,moon.size*(detail?1.25:1)),0,TAU);ctx.fill();
+  if(detail&&planetRadius>50){ctx.font='11px system-ui,sans-serif';ctx.fillStyle='rgba(223,228,238,.62)';ctx.fillText(moon.name,mx+5,my-4)}
+ }
+}
+
+function drawSystem(t,al,ee){
+ const s=cam.s,X0=cam.ax-cam.ox*s,Y0=cam.ay-cam.oy*s,bn=born(t);
+ ctx.globalAlpha=al;
+ const na=1-sstep(-4590,-4520,t);
+ if(na>.01){const rad=330*s,g=ctx.createRadialGradient(X0,Y0,0,X0,Y0,rad);
+  g.addColorStop(0,'rgba(255,170,110,'+(.32*na).toFixed(3)+')');g.addColorStop(.55,'rgba(255,140,90,'+(.1*na).toFixed(3)+')');g.addColorStop(1,'rgba(255,120,80,0)');
+  ctx.fillStyle=g;ctx.beginPath();ctx.arc(X0,Y0,rad,0,TAU);ctx.fill()}
+ if(!lite&&t>-4500&&t<5400){ /* habitable zone: it drifts outward as the Sun brightens */
+  const sq=Math.sqrt(lum(t)),r0=60*Math.sqrt(.95*sq),r1=60*Math.sqrt(1.37*sq);
+  ctx.strokeStyle='rgba(110,210,140,.07)';ctx.lineWidth=(r1-r0)*s;ctx.beginPath();ctx.arc(X0,Y0,(r0+r1)/2*s,0,TAU);ctx.stroke()}
+ /* orbits: one batched stroke */
+ ctx.globalAlpha=al*bn;ctx.lineWidth=1;ctx.strokeStyle='rgba(223,228,238,.1)';ctx.beginPath();
+ const st=lite?2:1;
+ for(let i=0;i<8;i++){if(t>=PL[i].engulf)continue;const o=ORB[i];
+  for(let j=0;j<o.length;j+=2*st){const x=X0+o[j]*s,y=Y0+o[j+1]*s;if(j===0)ctx.moveTo(x,y);else ctx.lineTo(x,y)}ctx.closePath()}
+ ctx.stroke();
+ if(hov>0&&t<PL[hov-1].engulf){const o=ORB[hov-1];ctx.strokeStyle='rgba(223,228,238,.35)';ctx.beginPath();
+  for(let j=0;j<o.length;j+=2){const x=X0+o[j]*s,y=Y0+o[j+1]*s;if(j===0)ctx.moveTo(x,y);else ctx.lineTo(x,y)}ctx.closePath();ctx.stroke()}
+ /* planets */
+ ctx.font='11.5px system-ui,sans-serif';ctx.textBaseline='alphabetic';
+ for(let i=0;i<8;i++){const q=PL[i],b=i+1;if(t>=q.engulf||bn<.02)continue;
+  const x=X0+PX[b]*s,y=Y0+PY[b]*s;let r=q.r*ps;
+  if(view!=='system'&&b===sel)r=lerp(r,Rview,ee*ee);
+  ctx.globalAlpha=al*bn;
+  if(q.ring){ctx.strokeStyle='rgba(230,213,163,.55)';ctx.lineWidth=1.2;ctx.beginPath();ctx.ellipse(x,y,r*2.1,r*.75,-.45,0,TAU);ctx.stroke()}
+  ctx.fillStyle=q.c;ctx.beginPath();ctx.arc(x,y,r,0,TAU);ctx.fill();
+  drawMoons(b,x,y,r,al*bn,false);
+  if(view==='system'&&(!lite||hov===b)){ctx.fillStyle=hov===b?'#fff':'rgba(190,200,215,.5)';ctx.fillText(q.n,x+r+5,y-r-3)}}
+ /* the Sun goes last so it can swallow what it swells past */
+ ctx.globalAlpha=al;
+ const baseR=60*Math.sqrt(sunR*.00465),minR=sunR<.1?2.6:5.5;
+ let rs=Math.max(minR,baseR*SC);
+ sunPx=rs;
+ if(view!=='system'){rs=sel===0?lerp(rs,Rview*sunRel,ee*ee):Math.max(minR,baseR*s)}
+ const cr=sunC[0],cg=sunC[1],cb=sunC[2];
+ if(!lite&&sunGlowA>.02){const g=ctx.createRadialGradient(X0,Y0,rs*.6,X0,Y0,rs*3.4);
+  g.addColorStop(0,rgba(cr,cg,cb,.5*sunGlowA));g.addColorStop(1,rgba(cr,cg,cb,0));ctx.fillStyle=g;ctx.beginPath();ctx.arc(X0,Y0,rs*3.4,0,TAU);ctx.fill()}
+ ctx.fillStyle=rgb(cr,cg,cb);ctx.beginPath();ctx.arc(X0,Y0,rs,0,TAU);ctx.fill();
+ if(t>7785){const u=(t-7785)/400;if(u<1){const a=1-u,rr=lerp(16,380,Math.sqrt(u))*s;
+  ctx.lineWidth=14*a+3;ctx.strokeStyle='rgba(120,225,215,'+(.38*a).toFixed(3)+')';ctx.beginPath();ctx.arc(X0,Y0,rr,0,TAU);ctx.stroke();
+  ctx.lineWidth=24*a+1;ctx.strokeStyle='rgba(255,140,170,'+(.14*a).toFixed(3)+')';ctx.beginPath();ctx.arc(X0,Y0,rr*.82,0,TAU);ctx.stroke()}}
+ ctx.globalAlpha=1}
+
+/* ================= drawing: up close ================= */
+function lobes(list,cx,cy,R,spin,fill){
+ ctx.beginPath();
+ for(let i=0;i<list.length;i++){const l=list[i],la=l[1]*D2R,lo=l[0]*D2R+spin,z=Math.cos(la)*Math.cos(lo);if(z<-.15)continue;
+  const x=cx+Math.cos(la)*Math.sin(lo)*R,y=cy-Math.sin(la)*R,zc=Math.pow(Math.max(z,.12),.6),rx=l[2]*R*zc,ry=l[2]*R;
+  ctx.moveTo(x+rx,y);ctx.ellipse(x,y,rx,ry,0,0,TAU)}
+ ctx.fillStyle=fill;ctx.fill()}
+function rings(cx,cy,R,front){
+ const a0=front?0:PI,a1=front?PI:TAU;
+ ctx.lineWidth=R*.16;ctx.strokeStyle='rgba(222,200,150,.32)';ctx.beginPath();ctx.ellipse(cx,cy,R*1.75,R*.5,-.32,a0,a1);ctx.stroke();
+ ctx.lineWidth=R*.07;ctx.strokeStyle='rgba(235,220,180,.5)';ctx.beginPath();ctx.ellipse(cx,cy,R*2.05,R*.58,-.32,a0,a1);ctx.stroke()}
+function ghost(cx,cy,R,ember){
+ if(ember){const g=ctx.createRadialGradient(cx,cy,0,cx,cy,R);g.addColorStop(0,'rgba(255,90,40,.22)');g.addColorStop(1,'rgba(255,90,40,0)');ctx.fillStyle=g;ctx.beginPath();ctx.arc(cx,cy,R,0,TAU);ctx.fill()}
+ ctx.setLineDash([4,7]);ctx.lineWidth=1;ctx.strokeStyle='rgba(223,228,238,.28)';ctx.beginPath();ctx.arc(cx,cy,R,0,TAU);ctx.stroke();ctx.setLineDash([])}
+
+function drawPlanet(b,t){
+ const i=b-1,q=PL[i],L=LOOK[i],cx=vcx,cy=vcy,R=Rview,spin=clock*.32;
+ if(t<-4560||t>=q.engulf){ghost(cx,cy,R,t>=q.engulf);return}
+ let dx=-PX[b],dy=-PY[b];const dl=Math.hypot(dx,dy)||1;dx/=dl;dy/=dl; /* which way the Sun is */
+ const k=massK(t),heat=sstep(6,200,lum(t)/(q.a*q.a*k*k));
+ let atm=L.atm;
+ if(L.ring)rings(cx,cy,R,false);
+ ctx.beginPath();ctx.arc(cx,cy,R,0,TAU);
+ if(i===2){row(EK,t,ek);ctx.fillStyle=rgb(ek[0],ek[1],ek[2]);atm=Math.min(255,ek[0]+70)+','+Math.min(255,ek[1]+70)+','+Math.min(255,ek[2]+70)}
+ else ctx.fillStyle=L.base||L.bands[0];
+ ctx.fill();ctx.save();ctx.clip();
+ if(L.bands){const n=L.bands.length,h=2*R/n;for(let j=0;j<n;j++){ctx.fillStyle=L.bands[j];ctx.fillRect(cx-R,cy-R+j*h,2*R,h+1)}}
+ if(i===2){
+  lobes(earthLobes(t),cx,cy,R,spin,rgb(ek[3],ek[4],ek[5]));
+  const ice=ek[6];if(ice>.01){const rc=R*(.15+1.5*ice*ice);ctx.fillStyle='rgba(240,247,255,.9)';ctx.beginPath();ctx.arc(cx,cy-R,rc,0,TAU);ctx.moveTo(cx+rc,cy+R);ctx.arc(cx,cy+R,rc,0,TAU);ctx.fill()}
+  const cl=(.16+ek[7])*sstep(-4300,-3900,t);if(cl>.01)lobes(CLOUDS,cx,cy,R,spin*1.35+1,'rgba(255,255,255,'+clamp(cl,0,.7).toFixed(3)+')')}
+ else{if(L.spots)lobes(L.spots[0],cx,cy,R,spin*.5,L.spots[1]);
+  if(L.cap){ctx.fillStyle='rgba(255,255,255,.8)';ctx.beginPath();ctx.arc(cx,cy-R*.98,R*L.cap*1.4,0,TAU);ctx.fill()}}
+ /* day and night: a single gradient aimed at the Sun */
+ const g=ctx.createRadialGradient(cx+dx*R*.5,cy+dy*R*.5,R*.05,cx,cy,R*1.08);
+ g.addColorStop(0,'rgba(0,0,0,0)');g.addColorStop(.5,'rgba(0,0,6,.16)');g.addColorStop(.8,'rgba(0,0,8,.62)');g.addColorStop(1,'rgba(0,0,10,.9)');
+ ctx.fillStyle=g;ctx.fillRect(cx-R,cy-R,2*R,2*R);
+ if(heat>.02){const h=ctx.createRadialGradient(cx+dx*R*.5,cy+dy*R*.5,R*.05,cx,cy,R*1.05);
+  h.addColorStop(0,'rgba(255,120,40,'+(heat*.75).toFixed(3)+')');h.addColorStop(1,'rgba(255,60,20,'+(heat*.25).toFixed(3)+')');ctx.fillStyle=h;ctx.fillRect(cx-R,cy-R,2*R,2*R)}
+ ctx.restore();
+ if(atm){ctx.lineWidth=2;ctx.strokeStyle='rgba('+atm+',.32)';ctx.beginPath();ctx.arc(cx,cy,R+1,0,TAU);ctx.stroke()}
+ if(L.ring)rings(cx,cy,R,true);
+ drawMoons(b,cx,cy,R,1, true)}
+
+function drawSunDetail(t){
+ const cx=vcx,cy=vcy,R0=Rview,R=R0*sunRel,c=sunC,col=(c[0]|0)+','+(c[1]|0)+','+(c[2]|0);
+ if(sunGlowA>.02){const g=ctx.createRadialGradient(cx,cy,R*.6,cx,cy,R*2.4);g.addColorStop(0,'rgba('+col+','+(.45*sunGlowA).toFixed(3)+')');g.addColorStop(1,'rgba('+col+',0)');
+  ctx.fillStyle=g;ctx.beginPath();ctx.arc(cx,cy,R*2.4,0,TAU);ctx.fill()}
+ const g2=ctx.createRadialGradient(cx,cy,R*.1,cx,cy,R);g2.addColorStop(0,rgb(c[0],c[1],c[2]));g2.addColorStop(1,rgb(c[0]*.78,c[1]*.62,c[2]*.5));
+ ctx.fillStyle=g2;ctx.beginPath();ctx.arc(cx,cy,R,0,TAU);ctx.fill();
+ if(t>7785){const u=(t-7785)/400;if(u<1){const a=1-u,rr=lerp(R0*.25,R0*2.2,Math.sqrt(u));
+  ctx.lineWidth=14*a+3;ctx.strokeStyle='rgba(120,225,215,'+(.38*a).toFixed(3)+')';ctx.beginPath();ctx.arc(cx,cy,rr,0,TAU);ctx.stroke();
+  ctx.lineWidth=24*a+1;ctx.strokeStyle='rgba(255,140,170,'+(.14*a).toFixed(3)+')';ctx.beginPath();ctx.arc(cx,cy,rr*.82,0,TAU);ctx.stroke()}}}
+
+function drawDetail(b,t,al){ctx.globalAlpha=al;if(b===0)drawSunDetail(t);else drawPlanet(b,t);ctx.globalAlpha=1}
+
+function render(t){
+ ctx.setTransform(dpr,0,0,dpr,0,0);ctx.globalAlpha=1;
+ ctx.fillStyle=starPat;ctx.fillRect(0,0,W,H);
+ sunState(t);SC=F*Math.pow(massK(t),.25);setCam();
+ const e=view==='system'?0:ease(tz);
+ const alSys=view==='planet'?0:1-sstep(.55,.95,e);
+ if(alSys>0)drawSystem(t,alSys,e);
+ const alDet=view==='system'?0:sstep(.5,.98,e);
+ if(alDet>0)drawDetail(sel,t,alDet)}
+
+/* ================= UI ================= */
+let hb='',hs='',hStage='',hNote='',curKey='',hAcc='';
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+function updateHud(){
+ const f=fmtT(T);if(f[0]!==hb){hb=f[0];bigEl.textContent=hb}if(f[1]!==hs){hs=f[1];subEl.textContent=hs}
+ const st=pick(ST,T),ev=pick(EV,T);let a,n;
+ if(view==='planet'||view==='in'){a=BN[sel]+', '+shortName(eraAt(sel,T)).toLowerCase();n=st+'. '+ev}else{a=st;n=ev}
+ if(a!==hStage){hStage=a;stageEl.textContent=a}if(n!==hNote){hNote=n;noteEl.textContent=n}
+ /* the interface takes its accent from the Sun's current colour */
+ let r=sunC[0],g=sunC[1],b=sunC[2];const m=Math.max(r,g,b);if(m<1){r=g=b=200}else if(m<190){const k=190/m;r*=k;g*=k;b*=k}
+ const acc=rgb(lerp(r,223,.2),lerp(g,228,.2),lerp(b,238,.2));if(acc!==hAcc){hAcc=acc;document.documentElement.style.setProperty('--acc',acc)}
+ if(view==='planet'||view==='in')showPanel(sel,T)}
+function showPanel(b,t){
+ const L=ERAS[b],era=eraAt(b,t),idx=L.indexOf(era),key=b+':'+idx;if(key===curKey)return;curKey=key;
+ const kd=KIND[era.k],next=idx<L.length-1?fmtT(L[idx+1].t0)[0]:'the end';
+ panel.innerHTML='<div class="tag"><i style="background:'+kd[1]+'"></i>'+esc(era.g||kd[0])+'</div><h2>'+esc(longName(era))+'</h2><div class="rng">'+esc(shortName(era))+', '+esc(fmtT(era.t0)[0])+' to '+esc(next)+'</div><p>'+esc(era.x)+'</p><ul>'+
+  era.i.map(it=>'<li><b>'+esc(it[0])+'</b><span>'+esc(it[1])+'</span></li>').join('')+'</ul>'+(era.f?'<div class="fact"><b>'+kd[2]+'.</b> '+esc(era.f)+'</div>':'');
+ panel.scrollTop=0;
+ for(let j=0;j<chips.children.length;j++){const c=chips.children[j];c.classList.toggle('on',j===idx);
+  if(j===idx)chips.scrollLeft=c.offsetLeft-chips.clientWidth/2+c.offsetWidth/2}}
+function buildChips(b){chips.innerHTML='';ERAS[b].forEach((e,j)=>{const btn=document.createElement('button');btn.type='button';btn.textContent=shortName(e);btn.onclick=()=>jumpEra(j);chips.appendChild(btn)})}
+function buildBodyNav(){bodyNav.innerHTML='';BN.forEach((name,b)=>{const btn=document.createElement('button');btn.type='button';btn.textContent=name;btn.onclick=()=>focusBody(b);bodyNav.appendChild(btn)})}
+function syncTl(){tl.value=Math.round(p*10000)}
+function syncPlay(){btnPlay.textContent=playing?'Pause':'Play'}
+function jumpEra(j){const e=ERAS[sel][j];p=clamp(tToP(e.t0)+(j?.0007:0),0,1);syncTl();dirty=true}
+function stepEra(d){const L=ERAS[sel],i=L.indexOf(eraAt(sel,T));jumpEra(clamp(i+d,0,L.length-1))}
+function openBody(b){if(view!=='system'||b<0||b>8)return;sel=b;view='in';tz=0;curKey='';buildChips(b);document.body.classList.add('planet');hint.classList.add('gone');hov=-1;cv.style.cursor='default';dirty=true}
+function closeBody(){if(view!=='planet'&&view!=='in')return;view='out';document.body.classList.remove('planet');dirty=true}
+function focusBody(b){if(view!=='system'){view='system';tz=0;document.body.classList.remove('planet')}openBody(b);document.body.classList.remove('nav-open');btnBodies.setAttribute('aria-expanded','false')}
+function goToday(){p=tToP(0);playing=false;syncPlay();syncTl();if(view!=='system'){view='out';document.body.classList.remove('planet')}dirty=true;hint.classList.add('gone')}
+
+function hit(mx,my){
+ const bn=born(T);let best=-1,bd=1e9;
+ for(let i=0;i<8;i++){const q=PL[i];if(bn<.5||T>=q.engulf)continue;
+  const x=cx0+PX[i+1]*SC,y=cy0+PY[i+1]*SC,d=Math.hypot(mx-x,my-y);if(d<Math.max(14,q.r*ps+8)&&d<bd){bd=d;best=i+1}}
+ const ds=Math.hypot(mx-cx0,my-cy0);if(ds<Math.max(16,sunPx+6)&&ds<bd)best=0;
+ return best}
+cv.addEventListener('pointermove',e=>{if(view!=='system')return;const h=hit(e.clientX,e.clientY);if(h!==hov){hov=h;cv.style.cursor=h>=0?'pointer':'default';dirty=true}});
+cv.addEventListener('click',e=>{if(view!=='system')return;const h=hit(e.clientX,e.clientY);if(h>=0)openBody(h)});
+$('back').onclick=closeBody;
+btnToday.onclick=goToday;
+btnBodies.onclick=()=>{const open=document.body.classList.toggle('nav-open');btnBodies.setAttribute('aria-expanded',open?'true':'false')};
+tl.addEventListener('input',()=>{p=tl.value/10000;dirty=true;hint.classList.add('gone')});
+btnPlay.onclick=()=>{if(p>=1)p=0;playing=!playing;syncPlay();syncTl();dirty=true;hint.classList.add('gone')};
+$('b-start').onclick=()=>{p=0;syncTl();dirty=true};
+btnSpd.onclick=()=>{si=(si+1)%SPEEDS.length;btnSpd.textContent=SPEEDS[si]+'x'};
+btnOrb.onclick=()=>{oi=(oi+1)%OSP.length;btnOrb.textContent=OSP[oi]?'Orbits x'+OSP[oi]:'Orbits paused';dirty=true};
+btnQ.onclick=()=>setLite(!lite,false);
+addEventListener('keydown',e=>{
+ if(e.key===' '){if(e.target&&e.target.tagName==='BUTTON')return;e.preventDefault();btnPlay.onclick()}
+ else if(e.key==='ArrowRight'||e.key==='ArrowLeft'){e.preventDefault();const d=e.key==='ArrowRight'?1:-1;if(view==='planet')stepEra(d);else{p=clamp(p+d*.01,0,1);syncTl();dirty=true}}
+ else if(e.key==='Escape'){closeBody();document.body.classList.remove('nav-open');btnBodies.setAttribute('aria-expanded','false')}
+ else if(e.key==='Home')goToday();
+ else if(e.key==='b'||e.key==='B')btnBodies.click();
+ else if(e.key==='o'||e.key==='O')btnOrb.onclick();
+ else if(e.key==='l'||e.key==='L')btnQ.onclick()});
+addEventListener('resize',resize);
+{const tk=$('ticks'),TICKS=[['Birth',0],['Cambrian',tToP(-541),1],['Jurassic',tToP(-173)],['Now',.5,0,'now'],['Red giant',tToP(6900)],['White dwarf',tToP(7900),1],['The end',1]];
+ for(const t of TICKS){const s=document.createElement('span');s.textContent=t[0];s.style.left=(t[1]*100)+'%';if(t[2])s.className='opt';if(t[3])s.classList.add(t[3]);tk.appendChild(s)}}
+
+/* ================= main loop ================= */
+let lastDraw=0,hudT=0,fN=0,fT=0,qN=0,qAcc=0,qDone=false;
+function frame(now){
+ requestAnimationFrame(frame);
+ if(document.hidden){lastDraw=now;return}
+ if(lite&&now-lastDraw<30)return;
+ let dt=(now-lastDraw)/1000;lastDraw=now;if(!(dt>0)||dt>.1)dt=.016;
+ const animating=playing||OSP[oi]>0||view!=='system'||dirty;
+ if(!animating){if(now-fT>500){fpsEl.textContent='idle';fT=now;fN=0}return}
+ clock+=dt;
+ if(!qDone){qN++;if(qN>30){qAcc+=dt;if(qN===120){qDone=true;if(qAcc/90>.027&&!lite)setLite(true,true)}}}
+ if(playing){p+=dt*SPEEDS[si]/90;if(p>=1){p=1;playing=false;syncPlay()}syncTl()}
+ T=pToT(p);yr+=dt*ORB_RATE*OSP[oi];place(yr);
+ if(view==='in'){tz+=dt/TT;if(tz>=1){tz=1;view='planet'}}
+ else if(view==='out'){tz-=dt/TT;if(tz<=0){tz=0;view='system'}}
+ render(T);
+ dirty=false;fN++;
+ if(now-hudT>100){hudT=now;updateHud()}
+ if(now-fT>500){fpsEl.textContent=Math.round(fN*1000/(now-fT))+' fps';fN=0;fT=now}}
+
+resize();T=pToT(p);place(0);sunState(T);syncTl();syncPlay();updateHud();
+buildBodyNav();
+window.SOL={open:openBody,close:closeBody,epoch(ma){p=tToP(ma);syncTl();dirty=true},get t(){return T},get view(){return view}};
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
